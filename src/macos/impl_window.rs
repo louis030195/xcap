@@ -1,6 +1,6 @@
 use core_foundation::{
-    array::{CFArrayGetCount, CFArrayGetValueAtIndex},
-    base::{FromVoid, TCFType},
+    array::{CFArray, CFArrayGetCount, CFArrayGetValueAtIndex},
+    base::{FromVoid, TCFType, TCFTypeRef, ToVoid},
     dictionary::{CFDictionaryGetValue, CFDictionaryRef},
     number::{kCFNumberIntType, CFBooleanGetValue, CFBooleanRef, CFNumberGetValue, CFNumberRef},
     string::CFString,
@@ -8,10 +8,11 @@ use core_foundation::{
 use core_graphics::{
     display::{
         kCGWindowListExcludeDesktopElements, kCGWindowListOptionIncludingWindow,
-        kCGWindowListOptionOnScreenOnly, CGDisplay, CGPoint, CGWindowListCopyWindowInfo,
+        kCGWindowListOptionOnScreenOnly, CFDictionary, CGDisplay, CGPoint,
+        CGWindowListCopyWindowInfo,
     },
     geometry::CGRect,
-    window::{kCGNullWindowID, kCGWindowSharingNone},
+    window::{kCGNullWindowID, kCGWindowSharingNone, CGWindowListOption},
 };
 use image::RgbaImage;
 use std::ffi::c_void;
@@ -87,11 +88,11 @@ fn get_cf_number_u32_value(cf_dictionary_ref: CFDictionaryRef, key: &str) -> XCa
     }
 }
 
-fn get_cf_string_value(cf_dictionary_ref: CFDictionaryRef, key: &str) -> XCapResult<String> {
-    let value_ref = get_cf_dictionary_get_value(cf_dictionary_ref, key)?;
+// fn get_cf_string_value(cf_dictionary_ref: CFDictionaryRef, key: &str) -> XCapResult<String> {
+//     let value_ref = get_cf_dictionary_get_value(cf_dictionary_ref, key)?;
 
-    Ok(unsafe { CFString::from_void(value_ref).to_string() })
-}
+//     Ok(unsafe { CFString::from_void(value_ref).to_string() })
+// }
 
 fn get_cf_bool_value(cf_dictionary_ref: CFDictionaryRef, key: &str) -> XCapResult<bool> {
     let value_ref = get_cf_dictionary_get_value(cf_dictionary_ref, key)?;
@@ -188,64 +189,73 @@ impl ImplWindow {
                 return Ok(impl_windows);
             }
 
-            let num_windows = CFArrayGetCount(cg_window_list_copy_window_info);
+            let window_array: CFArray<CFDictionaryRef> =
+                CFArray::wrap_under_create_rule(cg_window_list_copy_window_info);
+            let num_windows = unsafe { CFArrayGetCount(cg_window_list_copy_window_info) };
 
             for i in 0..num_windows {
-                let window_cf_dictionary_ref =
-                    CFArrayGetValueAtIndex(cg_window_list_copy_window_info, i) as CFDictionaryRef;
+                let window_dict_ref = unsafe {
+                    CFArrayGetValueAtIndex(cg_window_list_copy_window_info, i) as CFDictionaryRef
+                };
+                let window_dict = unsafe {
+                    CFDictionary::wrap_under_get_rule(window_dict_ref.as_void_ptr() as *const _)
+                };
 
-                if window_cf_dictionary_ref.is_null() {
-                    continue;
-                }
-
-                let window_name =
-                    match get_cf_string_value(window_cf_dictionary_ref, "kCGWindowName") {
-                        Ok(window_name) => window_name,
-                        _ => continue,
-                    };
+                let window_name = match get_cf_string_value(&window_dict, "kCGWindowName") {
+                    Some(name) => name,
+                    None => continue,
+                };
 
                 let window_owner_name =
-                    match get_cf_string_value(window_cf_dictionary_ref, "kCGWindowOwnerName") {
-                        Ok(window_owner_name) => window_owner_name,
-                        _ => continue,
+                    match get_cf_string_value(&window_dict, "kCGWindowOwnerName") {
+                        Some(name) => name,
+                        None => continue,
                     };
 
                 if window_name.eq("StatusIndicator") && window_owner_name.eq("Window Server") {
                     continue;
                 }
 
-                let window_sharing_state = match get_cf_number_u32_value(
-                    window_cf_dictionary_ref,
-                    "kCGWindowSharingState",
-                ) {
-                    Ok(window_sharing_state) => window_sharing_state,
-                    _ => continue,
-                };
-
-                if window_sharing_state == kCGWindowSharingNone {
-                    continue;
-                }
-
                 if let Ok(impl_window) = ImplWindow::new(
-                    window_cf_dictionary_ref,
+                    window_dict.as_concrete_TypeRef(),
                     &impl_monitors,
-                    window_name.clone(),
-                    window_owner_name.clone(),
+                    window_name,
+                    window_owner_name,
                 ) {
                     impl_windows.push(impl_window);
                 } else {
-                    log::error!(
-                        "ImplWindow::new({:?}, {:?}, {:?}, {:?}) failed",
-                        window_cf_dictionary_ref,
-                        &impl_monitors,
-                        &window_name,
-                        &window_owner_name
-                    );
+                    // log::error!(
+                    //     "ImplWindow::new({:?}, {:?}, {:?}, {:?}) failed",
+                    //     window_dict,
+                    //     &impl_monitors,
+                    //     &window_name,
+                    //     &window_owner_name
+                    // );
                 }
+
+                // Release the retained dictionary
+                drop(window_dict);
+            }
+
+            // After the loop
+            unsafe {
+                core_foundation::base::CFRelease(cg_window_list_copy_window_info as *mut _);
             }
 
             Ok(impl_windows)
         }
+    }
+}
+
+fn get_cf_string_value(dict: &CFDictionary, key: &str) -> Option<String> {
+    unsafe {
+        let cf_key = CFString::new(key);
+        let value_ref = CFDictionaryGetValue(dict.as_concrete_TypeRef(), cf_key.to_void());
+        if value_ref.is_null() {
+            return None;
+        }
+        let cf_string = CFString::wrap_under_get_rule(value_ref as *const _);
+        Some(cf_string.to_string())
     }
 }
 
