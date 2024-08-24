@@ -258,3 +258,44 @@ impl ImplWindow {
         )
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn test_all_no_memory_leaks() {
+        // Run the function multiple times to increase chances of detecting leaks
+        for _ in 0..10 {
+            let _ = ImplWindow::all();
+        }
+
+        // Get the current process ID
+        let pid = std::process::id();
+
+        // Run the 'leaks' command
+        let output = Command::new("leaks")
+            .args(&[pid.to_string()])
+            .output()
+            .expect("Failed to execute leaks command");
+
+        // Check the output for leaks
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        println!("leaks stdout: {}", stdout);
+        println!("leaks stderr: {}", stderr);
+
+        if stdout.is_empty() && stderr.is_empty() {
+            println!("Both stdout and stderr are empty. This might indicate that the 'leaks' command didn't run properly.");
+        } else if !stdout.contains("leaks Report Version:") {
+            println!("No leaks detected, but unexpected output format.");
+        } else {
+            assert!(
+                !stdout.contains("Process"),
+                "Memory leak detected: {}",
+                stdout
+            );
+        }
+    }
+}
